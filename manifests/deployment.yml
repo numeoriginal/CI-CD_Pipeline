@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: 
+  name: my-deployment
+  labels:
+    app: myapp-deployment
+    type: flask-app
+spec:
+  template:
+    metadata:
+      name: myapp-pod
+      labels:
+        app: myflask-app
+        type: flask-app
+    spec:
+      containers:
+      - name: flask-app
+        image: endofdaze/flaskapp2:latest
+
+  replicas: 3
+  selector:
+    matchLabels:
+      type: flask-app

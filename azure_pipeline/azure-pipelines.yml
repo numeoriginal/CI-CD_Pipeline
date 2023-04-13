@@ -1,0 +1,175 @@
+trigger: none
+
+resources:
+- repo: self
+
+parameters:
+  - name: imageRepository
+    type: string
+    displayName: Image Name
+    default: test
+  - name: tag
+    displayName: Image Tag
+    type: string
+    default: latest
+  - name: deployEnvironment
+    displayName: Deplyment Environment
+    type: string
+    default: ContainerInstance
+    values:
+    - ContainerInstance
+    - KubernetesService
+
+variables:
+  # Container registry service connection established during pipeline creation
+  dockerRegistryServiceConnection: 'ffa8b409-de90-42f6-910b-b9dc6b89dcbc'
+  containerRegistry: 'finalprojectconstantinrobert.azurecr.io'
+  dockerfilePath: 'Dockerfile'
+  myResourceGroup: 'finalproject'
+  azureRegion: 'northeurope'
+  containerName: 'flaskapp-container'
+  containerRegistryUserName: ''
+  containerRegistryPassword: ''
+  manifestPath: $(Build.SourcesDirectory)/manifests/deployment.yml
+  containerImageName: $(containerRegistry)/${{ parameters.imageRepository }}:${{ parameters.tag }}
+  # Agent VM image name
+  vmImageName: 'windows-latest'
+
+stages:
+- stage: Build
+  displayName: Build stage
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      name: SelfHostedAgentPool
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Build an image
+      inputs:
+        command: build
+        repository: ${{ parameters.imageRepository }}
+        containerRegistry: $(dockerRegistryServiceConnection)
+        dockerfile: $(dockerfilePath)
+        tags: |
+          ${{ parameters.tag }}
+
+- stage: Push
+  displayName: Push stage
+  dependsOn: Build
+  jobs:
+  - job: Push
+    displayName: Push
+    pool:
+      name: SelfHostedAgentPool
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Push an image to container registry
+      inputs:
+        command: push
+        repository: ${{ parameters.imageRepository }}
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          ${{ parameters.tag }}
+
+- stage: Deploy
+  displayName: Deploy image to azure
+  jobs:
+  - job: DeployContainerInstance
+    displayName: DeployContainerInstance
+    pool:
+      name: SelfHostedAgentPool
+      vmImage: $(vmImageName)
+    condition: and(succeeded(), eq('${{ parameters.deployEnvironment }}', 'ContainerInstance'))
+    steps:
+      - task: AzureKeyVault@2
+        inputs:
+          azureSubscription: 'finalprojectconnection'
+          KeyVaultName: 'azr-keyvault'
+          SecretsFilter: '*'
+        displayName: 'Get Registry Access Keys'
+        env:
+          containerRegistryUserName: $(containerRegistryUserName)
+          containerRegistryPassword: $(containerRegistryPassword)
+          
+      - task: AzureCLI@2
+        displayName: Creating azure container instance
+        inputs:
+          azureSubscription: 'finalprojectconnection'
+          scriptType: 'ps'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            az container create --resource-group $(myResourceGroup) `
+              --name $(containerName) `
+              --image $(containerImageName) `
+              --dns-name-label $(containerName) `
+              --ip-address Public `
+              --ports 80 `
+              --registry-login-server $(containerRegistry) `
+              --registry-username $(containerRegistryUserName) `
+              --registry-password $(containerRegistryPassword) `
+              --location $(azureRegion)
+
+  - job: DeployToKubernetesService
+    displayName: DeployToKubernetesService
+    pool:
+      name: SelfHostedAgentPool
+      vmImage: $(vmImageName)
+    condition: and(succeeded(), eq('${{ parameters.deployEnvironment }}', 'KubernetesService'))
+    steps:  
+    - task: AzureCLI@2
+      displayName: 'Deploy to AKS'
+      inputs:
+        azureSubscription: 'finalprojectconnection'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az aks get-credentials --resource-group finalproject --name azure-kube-cluster
+          kubectl get namespaces
+          kubectl get deployments --namespace=default
+          (Get-Content -Path ${{ variables.manifestPath }}) | Foreach-Object { $_ -replace "{IMAGE}", "${{ variables.containerImageName }}" } | Set-Content -Path ${{ variables.manifestPath }}
+          kubectl apply -f ${{ variables.manifestPath }} --namespace=default --validate=false
+          kubectl get svc
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+                      
+- stage: Test
+  displayName: Test
+  jobs: 
+  - job: TestDeploymentSuccess
+    displayName: Test deploy success
+    pool:
+      name: SelfHostedAgentPool
+      vmImage: $(vmImageName)
+    
+    steps:
+    - task: PowerShell@2
+      displayName: Get the container health status
+      condition: and(succeeded(), eq('${{ parameters.deployEnvironment }}', 'ContainerInstance'))
+      inputs:
+        targetType: 'inline'
+        script: |
+          $status = (Invoke-WebRequest -Uri http://$(containerName).$(azureRegion).azurecontainer.io/ -UseBasicParsing -Method Head).StatusCode
+          if ($status -eq 200) {
+            Write-Host 'Container is live!'
+          } else {
+            Write-Host 'Container is not live!'
+            exit 1
+          }
+
+    - task: PowerShell@2
+      displayName: 'Test kubernetes deploy status'
+      condition: and(succeeded(), eq('${{ parameters.deployEnvironment }}', 'KubernetesService'))
+      inputs:
+        targetType: 'inline'
+        script: |
+          $status = (Invoke-WebRequest -Uri "http://$(kubectl get service my-service-cloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}')").StatusCode
+          if ($status -eq 200) {
+              Write-Host "Application is running."
+          } else {
+              Write-Host "Application is not running."
+              exit 1
+          }
+
+
