@@ -13,7 +13,7 @@ parameters:
     type: string
     default: latest
   - name: deployEnvironment
-    displayName: Deplyment Environment
+    displayName: Deployment Environment
     type: string
     default: ContainerInstance
     values:
@@ -22,15 +22,15 @@ parameters:
 
 variables:
   # Container registry service connection established during pipeline creation
-  dockerRegistryServiceConnection: 'ffa8b409-de90-42f6-910b-b9dc6b89dcbc'
-  containerRegistry: 'finalprojectconstantinrobert.azurecr.io'
+  dockerRegistryServiceConnection: 'your-dockerRegistry-serviceConnection'
+  containerRegistry: 'your-containerRegistry'
   dockerfilePath: 'Dockerfile'
-  myResourceGroup: 'finalproject'
-  azureRegion: 'northeurope'
-  containerName: 'flaskapp-container'
+  myResourceGroup: 'your-azure-resourceGroup'
+  azureRegion: 'your-azureRegion'
+  containerName: 'your-containerName'
   containerRegistryUserName: ''
   containerRegistryPassword: ''
-  manifestPath: $(Build.SourcesDirectory)/manifests/deployment.yml
+  manifestPath: $(Build.SourcesDirectory)/manifests/deployment.yml # <- path to your manifest file
   containerImageName: $(containerRegistry)/${{ parameters.imageRepository }}:${{ parameters.tag }}
   # Agent VM image name
   vmImageName: 'windows-latest'
@@ -42,7 +42,7 @@ stages:
   - job: Build
     displayName: Build
     pool:
-      name: SelfHostedAgentPool
+      name: SelfHostedAgentPool # <- if you are using selfhosted agent specify the pool
       vmImage: $(vmImageName)
     steps:
     - task: Docker@2
@@ -91,9 +91,9 @@ stages:
           SecretsFilter: '*'
         displayName: 'Get Registry Access Keys'
         env:
-          containerRegistryUserName: $(containerRegistryUserName)
-          containerRegistryPassword: $(containerRegistryPassword)
-          
+          containerRegistryUserName: $(containerRegistryUserName) # <- Specify your keys here as you named them in the keyvault
+          containerRegistryPassword: $(containerRegistryPassword) # <- Specify your keys here as you named them in the keyvault
+      # specify the ports your app in exposing 
       - task: AzureCLI@2
         displayName: Creating azure container instance
         inputs:
@@ -106,12 +106,12 @@ stages:
               --image $(containerImageName) `
               --dns-name-label $(containerName) `
               --ip-address Public `
-              --ports 80 `
+              --ports 80 ` 
               --registry-login-server $(containerRegistry) `
               --registry-username $(containerRegistryUserName) `
               --registry-password $(containerRegistryPassword) `
               --location $(azureRegion)
-
+  
   - job: DeployToKubernetesService
     displayName: DeployToKubernetesService
     pool:
@@ -127,11 +127,13 @@ stages:
         scriptLocation: 'inlineScript'
         inlineScript: |
           az aks get-credentials --resource-group finalproject --name azure-kube-cluster
-          kubectl get namespaces
-          kubectl get deployments --namespace=default
+          # kubectl get namespaces
+          # kubectl get deployments --namespace=default
+          
+          # Replace the placeholder in the manifest for the container image
           (Get-Content -Path ${{ variables.manifestPath }}) | Foreach-Object { $_ -replace "{IMAGE}", "${{ variables.containerImageName }}" } | Set-Content -Path ${{ variables.manifestPath }}
           kubectl apply -f ${{ variables.manifestPath }} --namespace=default --validate=false
-          kubectl get svc
+          # kubectl get svc
         workingDirectory: '$(System.DefaultWorkingDirectory)'
                       
 - stage: Test
